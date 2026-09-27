@@ -1,0 +1,12 @@
+body {
+  margin: 3rem;
+  color: #172b4d;
+  background: #fafbfd;
+  font:
+    18px/1.5 system-ui,
+    sans-serif;
+}
+main {
+  max-width: 40rem;
+  margin: auto;
+}
