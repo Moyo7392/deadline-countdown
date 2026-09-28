@@ -3,6 +3,7 @@ import {
   ChangeDetectionStrategy,
   Component,
   DestroyRef,
+  DOCUMENT,
   inject,
   InjectionToken,
   NgZone,
@@ -10,7 +11,18 @@ import {
 } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { switchMap, timeout } from 'rxjs';
+import {
+  catchError,
+  defer,
+  EMPTY,
+  exhaustMap,
+  fromEvent,
+  map,
+  startWith,
+  Subject,
+  switchMap,
+  timeout,
+} from 'rxjs';
 import { browserClock, countdown, CountdownClock, readSecondsLeft } from './countdown';
 
 export const DEADLINE_CLOCK = new InjectionToken<CountdownClock>('Deadline clock', {
@@ -24,7 +36,8 @@ export const DEADLINE_CLOCK = new InjectionToken<CountdownClock>('Deadline clock
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     @if (failed()) {
-      <p role="alert">Unable to load the deadline. Please try again later.</p>
+      <p role="alert">Unable to load the deadline.</p>
+      <button type="button" (click)="retry()">Try again</button>
     } @else if (secondsLeft() === null) {
       <p>Loading deadline…</p>
     } @else {
@@ -39,16 +52,43 @@ export class DeadlineComponent {
   private readonly zone = inject(NgZone);
   private readonly destroyRef = inject(DestroyRef);
   private readonly clock = inject(DEADLINE_CLOCK);
+  private readonly document = inject(DOCUMENT);
+  private readonly attempts = new Subject<void>();
+
+  protected retry(): void {
+    // UI requests should not pull HTTP/timer setup back into Angular's zone.
+    this.zone.runOutsideAngular(() => this.attempts.next());
+  }
 
   constructor() {
     // Browser-only startup keeps a perpetual timer out of server rendering.
     afterNextRender(() => {
       this.zone.runOutsideAngular(() => {
-        this.http
-          .get<unknown>('/api/deadline')
+        const visibility = defer(() =>
+          fromEvent(this.document, 'visibilitychange').pipe(
+            map(() => !this.document.hidden),
+            startWith(!this.document.hidden),
+          ),
+        );
+        this.attempts
           .pipe(
-            timeout(10_000),
-            switchMap((body) => countdown(readSecondsLeft(body), this.clock)),
+            startWith(undefined),
+            // Ignore duplicate attempts while a request/countdown is active.
+            exhaustMap(() => {
+              this.zone.run(() => {
+                this.failed.set(false);
+                this.secondsLeft.set(null);
+              });
+              return this.http.get<unknown>('/api/deadline').pipe(
+                timeout(10_000),
+                switchMap((body) => countdown(readSecondsLeft(body), this.clock, visibility)),
+                // Catch inside the attempt, so an error doesn't kill retry.
+                catchError(() => {
+                  this.zone.run(() => this.failed.set(true));
+                  return EMPTY;
+                }),
+              );
+            }),
             takeUntilDestroyed(this.destroyRef),
           )
           .subscribe({
