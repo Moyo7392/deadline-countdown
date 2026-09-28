@@ -1,4 +1,4 @@
-import { Observable } from 'rxjs';
+import { defer, Observable } from 'rxjs';
 
 export interface CountdownClock {
   now(): number;
@@ -32,14 +32,24 @@ export function countdown(
   seconds: number,
   clock: CountdownClock = browserClock,
 ): Observable<number> {
+  return defer(() =>
+    countdownUntil(clock.now() + readSecondsLeft({ secondsLeft: seconds }) * 1000, clock),
+  );
+}
+
+/** deadlineMs is in the injected monotonic clock's time domain, not Unix time. */
+export function countdownUntil(
+  deadlineMs: number,
+  clock: CountdownClock = browserClock,
+): Observable<number> {
   return new Observable<number>((subscriber) => {
-    const deadline = clock.now() + readSecondsLeft({ secondsLeft: seconds }) * 1000;
+    if (!Number.isFinite(deadlineMs)) throw new Error('Invalid local deadline');
     let handle: unknown;
     let previous: number | undefined;
 
     const tick = () => {
       // Derive the value from elapsed time; missed callbacks must not add time.
-      const remainingMs = Math.max(0, deadline - clock.now());
+      const remainingMs = Math.max(0, deadlineMs - clock.now());
       const remaining = Math.ceil(remainingMs / 1000);
       if (remaining !== previous) {
         previous = remaining;

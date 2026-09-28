@@ -2,7 +2,8 @@ import { TestBed } from '@angular/core/testing';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEADLINE_CLOCK, DeadlineComponent } from './deadline.component';
+import { DeadlineComponent } from './deadline.component';
+import { DEADLINE_CLOCK } from './deadline.service';
 import { ManualClock } from '../testing/manual-clock';
 
 describe('DeadlineComponent', () => {
@@ -100,6 +101,35 @@ describe('DeadlineComponent', () => {
     fixture.destroy();
     http.expectNone('/api/deadline');
     expect(clock.pending).toBe(0);
+  });
+
+  it('shares one request and timer between views and keeps the surviving view live', async () => {
+    const first = create();
+    const second = create();
+    http.expectOne('/api/deadline').flush({ secondsLeft: 3 });
+    await Promise.all([first.whenStable(), second.whenStable()]);
+    expect(clock.pending).toBe(1);
+    first.destroy();
+    clock.fireAt(2000);
+    await second.whenStable();
+    expect(second.nativeElement.textContent).toContain('Seconds left to deadline: 1');
+    expect(clock.pending).toBe(1);
+    second.destroy();
+    expect(clock.pending).toBe(0);
+  });
+
+  it('remounts at the remaining duration without requesting or restarting the deadline', async () => {
+    const first = create();
+    http.expectOne('/api/deadline').flush({ secondsLeft: 10 });
+    first.destroy();
+    expect(clock.pending).toBe(0);
+    clock.fireAt(4200);
+    const second = create();
+    await second.whenStable();
+    expect(second.nativeElement.textContent).toContain('Seconds left to deadline: 6');
+    http.expectNone('/api/deadline');
+    expect(clock.pending).toBe(1);
+    second.destroy();
   });
 
   it('bounds a request that never responds', () => {
