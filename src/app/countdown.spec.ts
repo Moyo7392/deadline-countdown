@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BehaviorSubject, Observable, take } from 'rxjs';
+import { take } from 'rxjs';
 import { countdown, readSecondsLeft } from './countdown';
 import { ManualClock } from '../testing/manual-clock';
 
@@ -64,52 +64,67 @@ describe('countdown', () => {
     expect(clock.pending).toBe(0);
   });
 
-  it('suspends hidden-tab timers and catches up immediately on return', () => {
+  it('does not leave a timer when the consumer takes only the initial value', () => {
     const clock = new ManualClock();
-    const visibility = new BehaviorSubject(true);
     const values: number[] = [];
-    const subscription = countdown(10, clock, visibility).subscribe((n) => values.push(n));
-    visibility.next(false);
+    countdown(30, clock)
+      .pipe(take(1))
+      .subscribe((n) => values.push(n));
+    expect(values).toEqual([30]);
     expect(clock.pending).toBe(0);
-    clock.fireAt(4200);
-    expect(values).toEqual([10]);
-    visibility.next(true);
-    expect(values).toEqual([10, 6]);
-    expect(clock.pending).toBe(1);
-    visibility.next(true);
-    expect(clock.pending).toBe(1);
-    expect(values).toEqual([10, 6]);
+  });
+
+  it('keeps subscriptions independent when one consumer unsubscribes', () => {
+    const clock = new ManualClock();
+    const first: number[] = [];
+    const second: number[] = [];
+    const source = countdown(3, clock);
+    const subscription = source.subscribe((n) => first.push(n));
+    clock.fireAt(1000);
+    source.subscribe((n) => second.push(n));
+    expect(clock.pending).toBe(2);
     subscription.unsubscribe();
-    expect(visibility.observed).toBe(false);
+    expect(clock.pending).toBe(1);
+    clock.fireAt(4000);
+    expect(first).toEqual([3, 2]);
+    expect(second).toEqual([3, 0]);
     expect(clock.pending).toBe(0);
   });
 
-  it('starts hidden without a timer and expires on return without restarting', () => {
+  it('skips missed fractional boundaries and keeps only one pending timer', () => {
     const clock = new ManualClock();
-    const visibility = new BehaviorSubject(false);
     const values: number[] = [];
-    const subscription = countdown(3, clock, visibility).subscribe((n) => values.push(n));
-    expect(values).toEqual([3]);
+    countdown(5.25, clock).subscribe((n) => values.push(n));
+    clock.fireAt(2600);
+    expect(values).toEqual([6, 3]);
+    expect(clock.pending).toBe(1);
+    clock.fireAt(3250);
+    expect(values).toEqual([6, 3, 2]);
+    expect(clock.pending).toBe(1);
+    clock.fireAt(9000);
+    expect(values).toEqual([6, 3, 2, 0]);
     expect(clock.pending).toBe(0);
-    clock.fireAt(10000);
-    visibility.next(true);
-    expect(values).toEqual([3, 0]);
-    expect(subscription.closed).toBe(true);
-    expect(visibility.observed).toBe(false);
-    expect(clock.pending).toBe(0);
-    visibility.next(true);
-    expect(values).toEqual([3, 0]);
   });
 
-  it('does not attach visibility work after synchronous completion', () => {
+  it('does not emit a duplicate if a scheduler invokes a callback early', () => {
     const clock = new ManualClock();
-    let listeners = 0;
-    const visibility = new Observable<boolean>(() => {
-      listeners++;
-    });
-    countdown(0, clock, visibility).subscribe();
-    countdown(10, clock, visibility).pipe(take(1)).subscribe();
-    expect(listeners).toBe(0);
+    const schedule = clock.schedule.bind(clock);
+    let callback: (() => void) | undefined;
+    clock.schedule = (run, delay) => {
+      callback = run;
+      return schedule(run, delay);
+    };
+    const values: number[] = [];
+    const subscription = countdown(3, clock).subscribe((n) => values.push(n));
+    // Remove the scheduled job before delivering its callback ahead of time.
+    clock.cancel(1);
+    clock.time = 900;
+    callback!();
+    expect(values).toEqual([3]);
+    expect(clock.pending).toBe(1);
+    clock.fireAt(1000);
+    expect(values).toEqual([3, 2]);
+    subscription.unsubscribe();
     expect(clock.pending).toBe(0);
   });
 

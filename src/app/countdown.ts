@@ -1,4 +1,4 @@
-import { Observable, of } from 'rxjs';
+import { Observable } from 'rxjs';
 
 export interface CountdownClock {
   now(): number;
@@ -27,27 +27,17 @@ export function readSecondsLeft(response: unknown): number {
   return Math.max(0, seconds);
 }
 
-/**
- * Emit immediately, then at visible second boundaries, ending at zero.
- * Hidden pages do no timer work; returning emits the current value immediately.
- */
+/** Emit immediately, then at each displayed-second boundary, ending at zero. */
 export function countdown(
   seconds: number,
   clock: CountdownClock = browserClock,
-  visibility: Observable<boolean> = of(true),
 ): Observable<number> {
   return new Observable<number>((subscriber) => {
     const deadline = clock.now() + readSecondsLeft({ secondsLeft: seconds }) * 1000;
     let handle: unknown;
     let previous: number | undefined;
-    let visible = false;
-    const cancelPending = () => {
-      clock.cancel(handle);
-      handle = undefined;
-    };
 
     const tick = () => {
-      cancelPending();
       // Derive the value from elapsed time; missed callbacks must not add time.
       const remainingMs = Math.max(0, deadline - clock.now());
       const remaining = Math.ceil(remainingMs / 1000);
@@ -57,7 +47,7 @@ export function countdown(
       }
       if (remaining === 0) {
         subscriber.complete();
-      } else if (visible && !subscriber.closed) {
+      } else if (!subscriber.closed) {
         // A fractional initial value should change at its actual boundary.
         const untilNextSecond = remainingMs - (remaining - 1) * 1000;
         handle = clock.schedule(tick, Math.max(1, untilNextSecond));
@@ -65,19 +55,6 @@ export function countdown(
     };
 
     tick();
-    // Subscribe only while live: an expired deadline needs no event listener.
-    if (subscriber.closed) return cancelPending;
-    const visibilitySubscription = visibility.subscribe({
-      next: (isVisible) => {
-        visible = isVisible;
-        if (visible) tick();
-        else cancelPending();
-      },
-      error: (error) => subscriber.error(error),
-    });
-    return () => {
-      cancelPending();
-      visibilitySubscription.unsubscribe();
-    };
+    return () => clock.cancel(handle);
   });
 }
